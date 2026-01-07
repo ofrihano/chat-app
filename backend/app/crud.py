@@ -30,3 +30,20 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.refresh(db_user)
     
     return db_user
+
+def get_room_by_name(db: Session, name: str):
+    return db.query(models.Room).filter(models.Room.name == name).first()
+
+def create_room(db: Session, name: str):
+    room = models.Room(name=name)
+    db.add(room)
+    db.commit()
+    db.refresh(room)
+    return room
+
+def create_message(db: Session, content: str, room_id: int, sender_id: int = None):
+    message = models.Message(content=content, room_id=room_id, sender_id=sender_id)
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    return message

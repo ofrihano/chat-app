@@ -1,10 +1,11 @@
-from fastapi import FastAPI, WebSocket, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from app.database import engine, get_db
-from app import models, schemas, crud, auth
-from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
+
+from app.database import engine, get_db, SessionLocal
+from app import models, schemas, crud, auth
+from app.socket_manager import manager
 from app.config import SECRET_KEY, ALGORITHM
 
 # Create the database tables automatically
@@ -79,13 +80,51 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         
     return user
 
-# --- WebSocket (Phase 2 Placeholder) ---
-@app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str):
-    await websocket.accept()
-    while True:
-        data = await websocket.receive_text()
-        await websocket.send_text(f"Message received in room {room_id}: {data}")
+# --- WebSocket (Real-Time Chat) ---
+
+@app.websocket("/ws/{room_name}")
+async def websocket_endpoint(websocket: WebSocket, room_name: str):
+    await manager.connect(websocket, room_name)
+    
+    try:
+        # Create a dedicated database session for room setup
+        db = SessionLocal()
+        try:
+            db_room = crud.get_room_by_name(db, room_name)
+            if not db_room:
+                db_room = crud.create_room(db, name=room_name)
+            room_id = db_room.id
+        finally:
+            db.close()
+            
+        while True:
+            data = await websocket.receive_text()
+            
+            # Create a new database session for each message
+            db = SessionLocal()
+            try:
+                crud.create_message(db, content=data, room_id=room_id, sender_id=None)
+            except Exception as db_error:
+                print(f"Database error: {str(db_error)}")
+            finally:
+                db.close()
+            
+            await manager.broadcast(f"User wrote: {data}", room_name)
+            
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, room_name)
+        await manager.broadcast("A user left the chat", room_name)
+        
+    except Exception as e:
+        # --- DEBUGGING: Send the error to the client so you can see it! ---
+        error_msg = f"Error: {str(e)}"
+        print(error_msg) # Print to terminal
+        try:
+            await websocket.send_text(error_msg) # Send to browser
+        except:
+            pass
+        # -----------------------------------------------------------------
+        manager.disconnect(websocket, room_name)
 
 @app.get("/users/me", response_model=schemas.UserOut)
 async def read_users_me(current_user: models.User = Depends(get_current_user)):
